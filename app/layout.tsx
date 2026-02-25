@@ -23,11 +23,17 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="min-h-dvh font-sans antialiased pb-20">
-        <header className="sticky top-0 z-50 flex items-center gap-3 px-4 py-3 bg-surface border-b border-border">
-          <h1 className="text-sm font-semibold tracking-wide text-accent">
-            ATLAS PAW
-          </h1>
-          <span className="text-xs text-dim hidden sm:inline">
+        <header className="sticky top-0 z-50 flex items-center gap-3 px-4 py-3 bg-surface/95 backdrop-blur-sm border-b border-border">
+          <div className="flex items-center gap-2">
+            <span className="text-atlas text-base leading-none" aria-hidden="true">⬡</span>
+            <h1 className="text-sm font-semibold tracking-wide text-atlas">
+              ATLAS
+            </h1>
+            <span className="text-[10px] text-dim font-medium tracking-wider uppercase hidden sm:inline">
+              PAW
+            </span>
+          </div>
+          <span className="text-[10px] text-dim/60 hidden sm:inline">
             Mobius Civic AI
           </span>
           <div className="ml-auto">

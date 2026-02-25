@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { StatusCard } from "@/components/status-card";
 import { TripwireGrid } from "@/components/tripwire-grid";
+import { AtlasSays } from "@/components/atlas-says";
 
 interface AtlasState {
   suspended: boolean;
@@ -35,6 +36,17 @@ function computeTripwires(s: AtlasState): TripwireMap {
     retraction_avoidance: "pass",
     missing_epicon_footer: "pass",
   };
+}
+
+function relativeTime(iso: string | null): string {
+  if (!iso) return "Never";
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return "Just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ${mins % 60}m ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
 }
 
 export default function DashboardPage() {
@@ -105,8 +117,9 @@ export default function DashboardPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-dim text-sm">
-        Loading ATLAS state...
+      <div className="flex flex-col items-center justify-center h-64 gap-3">
+        <span className="text-atlas text-2xl animate-breathe">⬡</span>
+        <p className="text-dim text-sm">Loading ATLAS state...</p>
       </div>
     );
   }
@@ -114,7 +127,7 @@ export default function DashboardPage() {
   if (mode === "readonly" || !state) {
     return (
       <div className="space-y-4">
-        <div className="bg-warn/10 border border-warn/30 rounded-xl p-4 text-center">
+        <div className="bg-warn/10 border border-warn/30 rounded-xl p-4 text-center animate-card-in">
           <p className="text-warn text-sm font-semibold">Read-Only Mode</p>
           <p className="text-dim text-xs mt-1">
             Gateway offline. Local state unavailable. Showing Moltbook data
@@ -133,9 +146,19 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4">
+      {/* ATLAS Says — self-report card */}
+      <AtlasSays
+        suspended={state.suspended}
+        suspensionReason={state.suspension_reason}
+        postsToday={state.posts_today}
+        commentsToday={state.comments_today}
+        postsWithoutEngagement={state.posts_without_engagement}
+        recentConfidenceLevels={state.recent_confidence_levels}
+      />
+
       {/* Status + heartbeat */}
       <div className="grid grid-cols-2 gap-3">
-        <StatusCard label="System Status">
+        <StatusCard label="System Status" variant="atlas">
           {state.suspended ? (
             <>
               <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold uppercase bg-fail/15 text-fail">
@@ -145,7 +168,7 @@ export default function DashboardPage() {
               <button
                 disabled={acting}
                 onClick={resume}
-                className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-info text-info bg-info/10 active:bg-info/25 disabled:opacity-50"
+                className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-accent text-accent bg-accent/10 active:bg-accent/25 disabled:opacity-50"
               >
                 Resume
               </button>
@@ -157,9 +180,12 @@ export default function DashboardPage() {
           )}
         </StatusCard>
 
-        <StatusCard label="Last Heartbeat">
-          <p className="text-sm font-mono text-info leading-tight">
-            {state.last_heartbeat?.slice(0, 19) || "Never"}
+        <StatusCard label="Last Heartbeat" variant="atlas">
+          <p className="text-sm font-mono text-atlas leading-tight">
+            {relativeTime(state.last_heartbeat)}
+          </p>
+          <p className="text-[10px] text-dim mt-1">
+            {state.last_heartbeat?.slice(0, 19) || "—"}
           </p>
         </StatusCard>
       </div>
@@ -167,7 +193,7 @@ export default function DashboardPage() {
       {/* Counters */}
       <div className="grid grid-cols-2 gap-3">
         <StatusCard label="Posts Today">
-          <p className="text-2xl font-bold text-accent">
+          <p className="text-2xl font-bold text-atlas">
             {state.posts_today}
           </p>
         </StatusCard>
@@ -180,7 +206,7 @@ export default function DashboardPage() {
 
       {/* Tripwires */}
       {tripwires && (
-        <StatusCard label="Tripwires">
+        <StatusCard label="Tripwires" variant="atlas">
           <TripwireGrid tripwires={tripwires} />
         </StatusCard>
       )}
@@ -212,7 +238,7 @@ export default function DashboardPage() {
         </StatusCard>
       )}
 
-      {/* Quick actions */}
+      {/* Quick actions — custodian coral for human-initiated actions */}
       <button
         disabled={acting}
         onClick={triggerHeartbeat}
