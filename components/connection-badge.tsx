@@ -39,13 +39,18 @@ export function ConnectionBadge() {
         ? "bg-warn/15 text-warn border-warn/40"
         : "bg-dim/15 text-dim border-dim/40";
 
+  const dotCls =
+    mode === "full"
+      ? "bg-ok animate-breathe"
+      : mode === "readonly"
+        ? "bg-warn"
+        : "bg-dim";
+
   return (
     <span
       className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold uppercase tracking-wider border ${cls}`}
     >
-      <span
-        className={`w-1.5 h-1.5 rounded-full ${mode === "full" ? "bg-ok" : mode === "readonly" ? "bg-warn" : "bg-dim"} ${mode === "full" ? "animate-pulse" : ""}`}
-      />
+      <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${dotCls}`} />
       {label}
     </span>
   );
