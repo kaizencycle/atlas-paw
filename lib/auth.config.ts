@@ -1,6 +1,20 @@
 import type { NextAuthConfig } from "next-auth";
 import GitHub from "next-auth/providers/github";
 
+/**
+ * Auth.js v5 reads `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` via setEnvDefaults when
+ * the provider entry is the `GitHub` function (not a pre-built object). Many
+ * deployments still use `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET`; bridge
+ * those so we never pass empty strings (which block merge and cause
+ * "Configuration" / server error on /api/auth/signin/github).
+ */
+if (process.env.GITHUB_CLIENT_ID && !process.env.AUTH_GITHUB_ID) {
+  process.env.AUTH_GITHUB_ID = process.env.GITHUB_CLIENT_ID;
+}
+if (process.env.GITHUB_CLIENT_SECRET && !process.env.AUTH_GITHUB_SECRET) {
+  process.env.AUTH_GITHUB_SECRET = process.env.GITHUB_CLIENT_SECRET;
+}
+
 const authConfig = {
   /** Required on Vercel / behind proxies so OAuth callback URLs resolve correctly. */
   trustHost: true,
@@ -9,18 +23,8 @@ const authConfig = {
   pages: {
     signIn: "/signin",
   },
-  providers: [
-    GitHub({
-      clientId:
-        process.env.GITHUB_CLIENT_ID ||
-        process.env.AUTH_GITHUB_ID ||
-        "",
-      clientSecret:
-        process.env.GITHUB_CLIENT_SECRET ||
-        process.env.AUTH_GITHUB_SECRET ||
-        "",
-    }),
-  ],
+  /** Use `GitHub` as a function so Auth merges `AUTH_GITHUB_*` from env. */
+  providers: [GitHub],
   callbacks: {
     authorized({ auth, request }) {
       const path = request.nextUrl.pathname;
