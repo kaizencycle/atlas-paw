@@ -2,13 +2,23 @@ import type { NextAuthConfig } from "next-auth";
 import GitHub from "next-auth/providers/github";
 
 const authConfig = {
+  /** Required on Vercel / behind proxies so OAuth callback URLs resolve correctly. */
+  trustHost: true,
+  /** Explicit secret avoids MissingSecret in production; falls back to NEXTAUTH_SECRET. */
+  secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET,
   pages: {
     signIn: "/signin",
   },
   providers: [
     GitHub({
-      clientId: process.env.GITHUB_CLIENT_ID!,
-      clientSecret: process.env.GITHUB_CLIENT_SECRET!,
+      clientId:
+        process.env.GITHUB_CLIENT_ID ||
+        process.env.AUTH_GITHUB_ID ||
+        "",
+      clientSecret:
+        process.env.GITHUB_CLIENT_SECRET ||
+        process.env.AUTH_GITHUB_SECRET ||
+        "",
     }),
   ],
   callbacks: {
