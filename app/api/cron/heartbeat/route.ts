@@ -8,6 +8,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { loadLastSeen } from "@/lib/atlas-gateway-state";
 import { kvConfigured } from "@/lib/kv";
+import { runTripwireEvaluation } from "@/lib/tripwires/run-evaluation";
 
 export const dynamic = "force-dynamic";
 
@@ -34,9 +35,11 @@ export async function GET(req: NextRequest) {
   }
 
   if (!TERMINAL_URL || !AGENT_TOKEN) {
+    const tripwires = await runTripwireEvaluation();
     return NextResponse.json({
       ok: false,
       skipped: "TERMINAL_HEARTBEAT_URL or AGENT_SERVICE_TOKEN not configured",
+      tripwires,
     });
   }
 
@@ -72,12 +75,14 @@ export async function GET(req: NextRequest) {
       signal: AbortSignal.timeout(8000),
     });
     const body = await res.text().catch(() => "");
+    const tripwires = await runTripwireEvaluation();
     return NextResponse.json({
       ok: res.ok,
       status: res.status,
       sent_at: now,
       response_preview: body.slice(0, 200),
       had_last_seen: Boolean(lastSeen),
+      tripwires,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
