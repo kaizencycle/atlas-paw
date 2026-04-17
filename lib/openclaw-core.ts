@@ -1,15 +1,35 @@
-const TUNNEL_URL = process.env.OPENCLAW_TUNNEL_URL || "";
+import { kvConfigured, kvGet, kvSet } from "@/lib/kv";
+
+const TUNNEL_URL_ENV = process.env.OPENCLAW_TUNNEL_URL || "";
 const TOKEN = process.env.OPENCLAW_GATEWAY_TOKEN || "";
 
+const KV_TUNNEL_URL = "atlas:paw:tunnel-url";
+const KV_TUNNEL_HEALTH = "atlas:paw:tunnel-health";
+const HEALTH_TTL_SECONDS = 10;
+
+type CachedHealth = { ok: boolean; at: string };
+
+async function resolveTunnelUrl(): Promise<string> {
+  if (kvConfigured()) {
+    const fromKv = await kvGet<string>(KV_TUNNEL_URL);
+    if (typeof fromKv === "string" && fromKv.startsWith("https://")) {
+      return fromKv;
+    }
+  }
+  return TUNNEL_URL_ENV;
+}
+
 export function openclawConfigured(): boolean {
-  return Boolean(TUNNEL_URL && TOKEN);
+  return Boolean(TOKEN && (TUNNEL_URL_ENV || kvConfigured()));
 }
 
 export async function openclawFetch(
   path: string,
   options: RequestInit = {}
 ): Promise<Response> {
-  const url = `${TUNNEL_URL.replace(/\/$/, "")}${path}`;
+  const tunnel = await resolveTunnelUrl();
+  if (!tunnel) throw new Error("No tunnel URL configured");
+  const url = `${tunnel.replace(/\/$/, "")}${path}`;
   return fetch(url, {
     ...options,
     headers: {
@@ -47,17 +67,51 @@ export async function openclawExec(command: string): Promise<string> {
 }
 
 export async function checkTunnelHealth(): Promise<boolean> {
-  if (!TUNNEL_URL) return false;
+  if (kvConfigured()) {
+    const cached = await kvGet<CachedHealth>(KV_TUNNEL_HEALTH);
+    if (cached && typeof cached.ok === "boolean") {
+      const at = new Date(cached.at).getTime();
+      if (Number.isFinite(at) && Date.now() - at < HEALTH_TTL_SECONDS * 1000) {
+        return cached.ok;
+      }
+    }
+  }
+
+  const tunnel = await resolveTunnelUrl();
+  if (!tunnel) return false;
+
+  let ok = false;
   try {
     const res = await fetch(
-      `${TUNNEL_URL.replace(/\/$/, "")}/__openclaw__/health`,
+      `${tunnel.replace(/\/$/, "")}/__openclaw__/health`,
       {
         headers: { Authorization: `Bearer ${TOKEN}` },
         signal: AbortSignal.timeout(5000),
       }
     );
-    return res.ok;
+    ok = res.ok;
   } catch {
-    return false;
+    ok = false;
   }
+
+  if (kvConfigured()) {
+    void kvSet(
+      KV_TUNNEL_HEALTH,
+      { ok, at: new Date().toISOString() } satisfies CachedHealth,
+      { ex: HEALTH_TTL_SECONDS }
+    );
+  }
+
+  return ok;
+}
+
+export async function registerTunnelUrl(url: string): Promise<boolean> {
+  if (!kvConfigured()) return false;
+  if (!url.startsWith("https://")) return false;
+  return kvSet(KV_TUNNEL_URL, url, { ex: 3600 });
+}
+
+export async function getRegisteredTunnelUrl(): Promise<string | null> {
+  if (!kvConfigured()) return null;
+  return kvGet<string>(KV_TUNNEL_URL);
 }

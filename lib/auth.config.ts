@@ -15,6 +15,9 @@ const authConfig = {
     authorized({ auth, request }) {
       const path = request.nextUrl.pathname;
       if (path.startsWith("/api/auth")) return true;
+      if (path === "/api/health") return true;
+      if (path === "/api/gateway/register") return true;
+      if (path.startsWith("/api/cron/")) return true;
       if (path.startsWith("/api/")) return true;
       if (path === "/signin") return true;
       return Boolean(auth?.user);

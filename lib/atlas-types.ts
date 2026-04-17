@@ -14,9 +14,16 @@ export type AtlasAuditEntry = {
   details: Record<string, unknown>;
 };
 
+export type AtlasLastSeen = {
+  state: AtlasLiveState;
+  auditTail: AtlasAuditEntry[];
+  at: string;
+};
+
 export type AtlasLiveSnapshot = {
   mode: "full" | "readonly" | "checking";
   state: AtlasLiveState | null;
   auditTail: AtlasAuditEntry[];
   checkedAt: string;
+  lastSeen?: AtlasLastSeen | null;
 };

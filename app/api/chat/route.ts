@@ -1,15 +1,33 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { completeChat, getInferenceEnv } from "@/lib/inference";
+import { streamChat, getInferenceEnv } from "@/lib/inference";
 import { buildAtlasSystemPrompt } from "@/lib/atlas-chat-prompt";
 import { fetchAtlasLiveForChat } from "@/lib/atlas-gateway-state";
+import type { AtlasAuditEntry, AtlasLiveState } from "@/lib/atlas-types";
 
 export const dynamic = "force-dynamic";
+
+type ClientSnapshot = {
+  mode?: string;
+  state?: AtlasLiveState | null;
+  auditTail?: AtlasAuditEntry[];
+  checkedAt?: string;
+};
 
 type ChatBody = {
   messages?: Array<{ role: string; content: string }>;
   model?: string;
+  snapshot?: ClientSnapshot;
 };
+
+const CLIENT_SNAPSHOT_MAX_AGE_MS = 30_000;
+
+function ageMs(iso: string | undefined): number | null {
+  if (!iso) return null;
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return null;
+  return Date.now() - t;
+}
 
 export async function POST(req: NextRequest) {
   const session = await auth();
@@ -47,11 +65,37 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "messages required" }, { status: 400 });
   }
 
-  const live = await fetchAtlasLiveForChat();
+  let liveMode: "full" | "readonly" = "readonly";
+  let liveState: AtlasLiveState | null = null;
+  let liveAudit: AtlasAuditEntry[] = [];
+
+  const clientAge = ageMs(body.snapshot?.checkedAt);
+  const clientFresh =
+    clientAge !== null && clientAge < CLIENT_SNAPSHOT_MAX_AGE_MS;
+  const cs = body.snapshot;
+
+  if (
+    clientFresh &&
+    cs &&
+    (cs.mode === "full" || cs.mode === "readonly")
+  ) {
+    liveMode = cs.mode;
+    liveState = cs.state ?? null;
+    liveAudit = Array.isArray(cs.auditTail) ? cs.auditTail : [];
+  } else {
+    const live = await fetchAtlasLiveForChat();
+    liveMode = live.mode;
+    liveState = live.state ?? live.lastSeen?.state ?? null;
+    liveAudit =
+      live.auditTail.length > 0
+        ? live.auditTail
+        : live.lastSeen?.auditTail ?? [];
+  }
+
   const system = buildAtlasSystemPrompt({
-    mode: live.mode,
-    state: live.state,
-    auditTail: live.auditTail,
+    mode: liveMode,
+    state: liveState,
+    auditTail: liveAudit,
   });
 
   const messages = [
@@ -60,16 +104,12 @@ export async function POST(req: NextRequest) {
   ];
 
   try {
-    const reply = await completeChat({
-      messages,
-      model: body.model,
-    });
-    return NextResponse.json({
-      reply,
-      context: {
-        mode: live.mode,
-        hasState: Boolean(live.state),
-        auditCount: live.auditTail.length,
+    const stream = await streamChat({ messages, model: body.model });
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": "no-store",
+        "X-Content-Type-Options": "nosniff",
       },
     });
   } catch (e) {

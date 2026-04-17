@@ -58,6 +58,7 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [model, setModel] = useState("");
   const [sending, setSending] = useState(false);
+  const [streaming, setStreaming] = useState("");
   const [error, setError] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -68,7 +69,7 @@ export default function ChatPage() {
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, sending]);
+  }, [messages, streaming, sending]);
 
   const send = useCallback(async () => {
     const text = input.trim();
@@ -84,6 +85,7 @@ export default function ChatPage() {
     saveThread(next);
     setInput("");
     setSending(true);
+    setStreaming("");
 
     const apiMessages = next.map((m) => ({ role: m.role, content: m.content }));
 
@@ -94,28 +96,65 @@ export default function ChatPage() {
         body: JSON.stringify({
           messages: apiMessages,
           model: model.trim() || undefined,
+          snapshot: {
+            mode: snapshot.mode,
+            state: snapshot.state,
+            auditTail: snapshot.auditTail,
+            checkedAt: snapshot.checkedAt,
+          },
         }),
       });
-      const data = (await res.json()) as { reply?: string; error?: string };
+
+      const contentType = res.headers.get("content-type") || "";
+
       if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(data.error || res.statusText);
       }
+
+      if (contentType.includes("application/json")) {
+        const data = (await res.json()) as { reply?: string };
+        const assistant: StoredMsg = {
+          role: "assistant",
+          content: data.reply?.trim() || "(empty)",
+          at: new Date().toISOString(),
+        };
+        const withReply = [...next, assistant];
+        setMessages(withReply);
+        saveThread(withReply);
+        void refresh();
+        return;
+      }
+
+      const reader = res.body?.getReader();
+      if (!reader) throw new Error("No response body");
+      const decoder = new TextDecoder();
+      let acc = "";
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        setStreaming(acc);
+      }
+      const final = acc.trim() || "(empty)";
       const assistant: StoredMsg = {
         role: "assistant",
-        content: data.reply || "(empty)",
+        content: final,
         at: new Date().toISOString(),
       };
       const withReply = [...next, assistant];
       setMessages(withReply);
       saveThread(withReply);
+      setStreaming("");
       void refresh();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setError(msg);
+      setStreaming("");
     } finally {
       setSending(false);
     }
-  }, [input, messages, model, refresh, sending]);
+  }, [input, messages, model, refresh, sending, snapshot]);
 
   function clearThread() {
     setMessages([]);
@@ -160,7 +199,7 @@ export default function ChatPage() {
       </label>
 
       <div className="flex-1 min-h-[280px] max-h-[55dvh] overflow-y-auto rounded-xl border border-border bg-surface p-3 space-y-3">
-        {messages.length === 0 && (
+        {messages.length === 0 && !streaming && (
           <p className="text-sm text-dim text-center py-8">
             Say hello. Each reply uses your latest PAW snapshot (heartbeat,
             suspension, audit tail) on the server.
@@ -181,7 +220,21 @@ export default function ChatPage() {
             <p className="whitespace-pre-wrap mt-1">{m.content}</p>
           </div>
         ))}
-        {sending && (
+        {streaming && (
+          <div className="rounded-lg px-3 py-2 text-sm leading-relaxed bg-atlas/8 border border-atlas/20 mr-4">
+            <span className="text-[9px] uppercase tracking-wider text-dim font-bold">
+              ATLAS
+            </span>
+            <p className="whitespace-pre-wrap mt-1">
+              {streaming}
+              <span
+                className="inline-block w-1.5 h-3.5 ml-0.5 -mb-0.5 bg-atlas/60 animate-pulse"
+                aria-hidden
+              />
+            </p>
+          </div>
+        )}
+        {sending && !streaming && (
           <p className="text-xs text-dim animate-pulse">ATLAS is thinking…</p>
         )}
         <div ref={bottomRef} />
