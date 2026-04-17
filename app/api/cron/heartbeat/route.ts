@@ -1,3 +1,10 @@
+/**
+ * Daily ATLAS heartbeat forward to the Civic AI Terminal (Vercel Hobby allows
+ * at most once-per-day crons). Schedule is staggered after the terminal’s
+ * midnight UTC batch: watchdog 0:00, eve 0:15, promote 0:30, gi-refresh 0:45,
+ * then this route at 0:50 — see mobius-civic-ai-terminal vercel.json.
+ */
+
 import { NextRequest, NextResponse } from "next/server";
 import { loadLastSeen } from "@/lib/atlas-gateway-state";
 import { kvConfigured } from "@/lib/kv";
