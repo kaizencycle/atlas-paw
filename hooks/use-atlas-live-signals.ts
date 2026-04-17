@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   AtlasAuditEntry,
+  AtlasLastSeen,
   AtlasLiveSnapshot,
   AtlasLiveState,
 } from "@/lib/atlas-types";
@@ -22,8 +23,9 @@ function saveNotifyPref(on: boolean) {
 }
 
 function fingerprint(s: AtlasLiveSnapshot): string {
-  const st = s.state;
-  const tail = s.auditTail[0];
+  const st = s.state ?? s.lastSeen?.state ?? null;
+  const tail =
+    s.auditTail[0] ?? s.lastSeen?.auditTail?.[0] ?? undefined;
   return JSON.stringify({
     mode: s.mode,
     hb: st?.last_heartbeat ?? null,
@@ -33,6 +35,7 @@ function fingerprint(s: AtlasLiveSnapshot): string {
     ct: st?.comments_today ?? null,
     pwe: st?.posts_without_engagement ?? null,
     audit: tail ? `${tail.timestamp}|${tail.action}` : "",
+    lsAt: s.lastSeen?.at ?? null,
   });
 }
 
@@ -70,6 +73,7 @@ export function useAtlasLiveSignals(options: {
     state: null,
     auditTail: [],
     checkedAt: new Date().toISOString(),
+    lastSeen: null,
   });
   const [notifyEnabled, setNotifyEnabledState] = useState(false);
   const prevFp = useRef<string>("");
@@ -101,11 +105,22 @@ export function useAtlasLiveSignals(options: {
             : "checking";
 
       if (mode !== "full") {
+        let lastSeen: AtlasLastSeen | null = null;
+        try {
+          const lsRes = await fetch("/api/last-seen");
+          if (lsRes.ok) {
+            const lsData = (await lsRes.json()) as { lastSeen?: AtlasLastSeen | null };
+            lastSeen = lsData.lastSeen ?? null;
+          }
+        } catch {
+          lastSeen = null;
+        }
         const next: AtlasLiveSnapshot = {
           mode,
           state: null,
           auditTail: [],
           checkedAt,
+          lastSeen,
         };
         const fp = fingerprint(next);
         const delta =
@@ -138,8 +153,16 @@ export function useAtlasLiveSignals(options: {
           body: JSON.stringify({ action: "audit" }),
         }),
       ]);
-      const sJson = (await sRes.json()) as { result?: AtlasLiveState; error?: string };
-      const aJson = (await aRes.json()) as { result?: AtlasAuditEntry[]; error?: string };
+      const sJson = (await sRes.json()) as {
+        result?: AtlasLiveState;
+        lastSeen?: AtlasLastSeen | null;
+        error?: string;
+      };
+      const aJson = (await aRes.json()) as {
+        result?: AtlasAuditEntry[];
+        lastSeen?: AtlasLastSeen | null;
+        error?: string;
+      };
 
       const state =
         sJson.result && typeof sJson.result === "object" ? sJson.result : null;
@@ -154,6 +177,7 @@ export function useAtlasLiveSignals(options: {
         state,
         auditTail,
         checkedAt,
+        lastSeen: sJson.lastSeen ?? aJson.lastSeen ?? null,
       };
       const fp = fingerprint(next);
       const delta =
@@ -177,6 +201,7 @@ export function useAtlasLiveSignals(options: {
         state: null,
         auditTail: [],
         checkedAt,
+        lastSeen: null,
       });
     }
   }, []);
@@ -187,8 +212,40 @@ export function useAtlasLiveSignals(options: {
 
   useEffect(() => {
     const ms = snapshot.mode === "full" ? pollMs : pollReadonlyMs;
-    const id = window.setInterval(() => void refresh(), ms);
-    return () => window.clearInterval(id);
+    let id: number | null = null;
+
+    const start = () => {
+      if (id !== null) return;
+      id = window.setInterval(() => void refresh(), ms);
+    };
+    const stop = () => {
+      if (id === null) return;
+      window.clearInterval(id);
+      id = null;
+    };
+
+    const onVis = () => {
+      if (document.visibilityState === "visible") {
+        void refresh();
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (typeof document !== "undefined") {
+      if (document.visibilityState === "visible") start();
+      document.addEventListener("visibilitychange", onVis);
+    } else {
+      start();
+    }
+
+    return () => {
+      stop();
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onVis);
+      }
+    };
   }, [snapshot.mode, pollMs, pollReadonlyMs, refresh]);
 
   const requestNotifyPermission = useCallback(async () => {

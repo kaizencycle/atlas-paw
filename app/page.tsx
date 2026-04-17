@@ -1,24 +1,16 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useState } from "react";
 import { StatusCard } from "@/components/status-card";
 import { TripwireGrid } from "@/components/tripwire-grid";
 import { AtlasSays } from "@/components/atlas-says";
 import { AtlasNotifyBar } from "@/components/atlas-notify-bar";
-
-interface AtlasState {
-  suspended: boolean;
-  suspension_reason: string | null;
-  last_heartbeat: string | null;
-  posts_today: number;
-  comments_today: number;
-  recent_confidence_levels: string[];
-  posts_without_engagement: number;
-}
+import { useAtlasLive } from "@/components/atlas-live-context";
+import type { AtlasLiveState } from "@/lib/atlas-types";
 
 type TripwireMap = Record<string, string>;
 
-function computeTripwires(s: AtlasState): TripwireMap {
+function computeTripwires(s: AtlasLiveState): TripwireMap {
   const window = (s.recent_confidence_levels || []).slice(-20);
   let ci = "pass";
   if (window.length >= 10) {
@@ -51,41 +43,17 @@ function relativeTime(iso: string | null): string {
 }
 
 export default function DashboardPage() {
-  const [state, setState] = useState<AtlasState | null>(null);
-  const [mode, setMode] = useState<"full" | "readonly" | "checking">("checking");
-  const [loading, setLoading] = useState(true);
+  const { snapshot, refresh } = useAtlasLive();
   const [acting, setActing] = useState(false);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const hRes = await fetch("/api/health");
-      const hData = await hRes.json();
-      setMode(hData.mode);
+  const mode = snapshot.mode;
+  const state = snapshot.state;
+  const lastSeen = snapshot.lastSeen ?? null;
+  const effectiveState = state ?? lastSeen?.state ?? null;
+  const isLive = mode === "full" && state !== null;
+  const isStale = !isLive && effectiveState !== null;
 
-      if (hData.mode === "full") {
-        const sRes = await fetch("/api/openclaw", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "state" }),
-        });
-        const sData = await sRes.json();
-        setState(sData.result);
-      } else {
-        setState(null);
-      }
-    } catch {
-      setMode("readonly");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  async function triggerHeartbeat() {
+  const triggerHeartbeat = useCallback(async () => {
     setActing(true);
     await fetch("/api/openclaw", {
       method: "POST",
@@ -93,10 +61,10 @@ export default function DashboardPage() {
       body: JSON.stringify({ action: "heartbeat" }),
     });
     setActing(false);
-    refresh();
-  }
+    void refresh();
+  }, [refresh]);
 
-  async function resume() {
+  const resume = useCallback(async () => {
     setActing(true);
     await fetch("/api/openclaw", {
       method: "POST",
@@ -104,19 +72,10 @@ export default function DashboardPage() {
       body: JSON.stringify({ action: "resume" }),
     });
     setActing(false);
-    refresh();
-  }
+    void refresh();
+  }, [refresh]);
 
-  const tripwires = state ? computeTripwires(state) : null;
-  const confDist = state
-    ? {
-        low: state.recent_confidence_levels.filter((c) => c === "low").length,
-        medium: state.recent_confidence_levels.filter((c) => c === "medium").length,
-        high: state.recent_confidence_levels.filter((c) => c === "high").length,
-      }
-    : null;
-
-  if (loading) {
+  if (mode === "checking") {
     return (
       <div className="flex flex-col items-center justify-center h-64 gap-3">
         <span className="text-atlas text-2xl animate-breathe">⬡</span>
@@ -125,14 +84,15 @@ export default function DashboardPage() {
     );
   }
 
-  if (mode === "readonly" || !state) {
+  if (!effectiveState) {
     return (
       <div className="space-y-4">
+        <AtlasNotifyBar />
         <div className="bg-warn/10 border border-warn/30 rounded-xl p-4 text-center animate-card-in">
-          <p className="text-warn text-sm font-semibold">Read-Only Mode</p>
+          <p className="text-warn text-sm font-semibold">Gateway quiet</p>
           <p className="text-dim text-xs mt-1">
-            Gateway offline. Local state unavailable. Showing Moltbook data
-            only.
+            No live state and no cached last-seen. Start OpenClaw + cloudflared
+            on your PC, or wait for the next heartbeat.
           </p>
         </div>
         <StatusCard label="Moltbook Agent">
@@ -145,109 +105,125 @@ export default function DashboardPage() {
     );
   }
 
+  const tripwires = computeTripwires(effectiveState);
+  const confDist = {
+    low: effectiveState.recent_confidence_levels.filter((c) => c === "low").length,
+    medium: effectiveState.recent_confidence_levels.filter((c) => c === "medium")
+      .length,
+    high: effectiveState.recent_confidence_levels.filter((c) => c === "high")
+      .length,
+  };
+
   return (
     <div className="space-y-4">
       <AtlasNotifyBar />
-      {/* ATLAS Says — self-report card */}
+
+      {isStale && lastSeen && (
+        <div className="bg-surface/60 border border-border/60 rounded-lg px-3 py-2 text-[11px] text-dim text-center">
+          Showing last seen {relativeTime(lastSeen.at)} · PC offline
+        </div>
+      )}
+
       <AtlasSays
-        suspended={state.suspended}
-        suspensionReason={state.suspension_reason}
-        postsToday={state.posts_today}
-        commentsToday={state.comments_today}
-        postsWithoutEngagement={state.posts_without_engagement}
-        recentConfidenceLevels={state.recent_confidence_levels}
+        suspended={effectiveState.suspended}
+        suspensionReason={effectiveState.suspension_reason}
+        postsToday={effectiveState.posts_today}
+        commentsToday={effectiveState.comments_today}
+        postsWithoutEngagement={effectiveState.posts_without_engagement}
+        recentConfidenceLevels={effectiveState.recent_confidence_levels}
       />
 
-      {/* Status + heartbeat */}
       <div className="grid grid-cols-2 gap-3">
         <StatusCard label="System Status" variant="atlas">
-          {state.suspended ? (
+          {effectiveState.suspended ? (
             <>
               <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold uppercase bg-fail/15 text-fail">
                 Suspended
               </span>
-              <p className="text-xs text-dim mt-1.5">{state.suspension_reason}</p>
-              <button
-                disabled={acting}
-                onClick={resume}
-                className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-accent text-accent bg-accent/10 active:bg-accent/25 disabled:opacity-50"
-              >
-                Resume
-              </button>
+              <p className="text-xs text-dim mt-1.5">
+                {effectiveState.suspension_reason}
+              </p>
+              {isLive && (
+                <button
+                  disabled={acting}
+                  onClick={resume}
+                  className="mt-3 w-full py-2 rounded-lg text-xs font-semibold border border-accent text-accent bg-accent/10 active:bg-accent/25 disabled:opacity-50"
+                >
+                  Resume
+                </button>
+              )}
             </>
           ) : (
-            <span className="inline-block px-2 py-0.5 rounded text-[11px] font-bold uppercase bg-ok/15 text-ok">
-              Active
+            <span
+              className={`inline-block px-2 py-0.5 rounded text-[11px] font-bold uppercase ${
+                isLive ? "bg-ok/15 text-ok" : "bg-dim/15 text-dim"
+              }`}
+            >
+              {isLive ? "Active" : "Last Active"}
             </span>
           )}
         </StatusCard>
 
         <StatusCard label="Last Heartbeat" variant="atlas">
           <p className="text-sm font-mono text-atlas leading-tight">
-            {relativeTime(state.last_heartbeat)}
+            {relativeTime(effectiveState.last_heartbeat)}
           </p>
           <p className="text-[10px] text-dim mt-1">
-            {state.last_heartbeat?.slice(0, 19) || "—"}
+            {effectiveState.last_heartbeat?.slice(0, 19) || "—"}
           </p>
         </StatusCard>
       </div>
 
-      {/* Counters */}
       <div className="grid grid-cols-2 gap-3">
         <StatusCard label="Posts Today">
           <p className="text-2xl font-bold text-atlas">
-            {state.posts_today}
+            {effectiveState.posts_today}
           </p>
         </StatusCard>
         <StatusCard label="Comments Today">
           <p className="text-2xl font-bold text-accent2">
-            {state.comments_today}
+            {effectiveState.comments_today}
           </p>
         </StatusCard>
       </div>
 
-      {/* Tripwires */}
-      {tripwires && (
-        <StatusCard label="Tripwires" variant="atlas">
-          <TripwireGrid tripwires={tripwires} />
-        </StatusCard>
-      )}
+      <StatusCard label="Tripwires" variant="atlas">
+        <TripwireGrid tripwires={tripwires} />
+      </StatusCard>
 
-      {/* Confidence */}
-      {confDist && (
-        <StatusCard label="Confidence Distribution">
-          <div className="flex gap-6">
-            {(["low", "medium", "high"] as const).map((level) => (
-              <div key={level} className="text-center">
-                <p
-                  className={`text-xl font-bold ${
-                    level === "low"
-                      ? "text-ok"
-                      : level === "medium"
-                        ? "text-warn"
-                        : "text-fail"
-                  }`}
-                >
-                  {confDist[level]}
-                </p>
-                <p className="text-[10px] text-dim uppercase">{level}</p>
-              </div>
-            ))}
-          </div>
-          <p className="text-[10px] text-dim mt-2">
-            {state.recent_confidence_levels.length} samples
-          </p>
-        </StatusCard>
-      )}
+      <StatusCard label="Confidence Distribution">
+        <div className="flex gap-6">
+          {(["low", "medium", "high"] as const).map((level) => (
+            <div key={level} className="text-center">
+              <p
+                className={`text-xl font-bold ${
+                  level === "low"
+                    ? "text-ok"
+                    : level === "medium"
+                      ? "text-warn"
+                      : "text-fail"
+                }`}
+              >
+                {confDist[level]}
+              </p>
+              <p className="text-[10px] text-dim uppercase">{level}</p>
+            </div>
+          ))}
+        </div>
+        <p className="text-[10px] text-dim mt-2">
+          {effectiveState.recent_confidence_levels.length} samples
+        </p>
+      </StatusCard>
 
-      {/* Quick actions — custodian coral for human-initiated actions */}
-      <button
-        disabled={acting}
-        onClick={triggerHeartbeat}
-        className="w-full py-3 rounded-xl text-sm font-semibold border border-accent text-accent bg-accent/10 active:bg-accent/25 disabled:opacity-50 transition-colors"
-      >
-        {acting ? "Running..." : "Trigger Heartbeat"}
-      </button>
+      {isLive && (
+        <button
+          disabled={acting}
+          onClick={triggerHeartbeat}
+          className="w-full py-3 rounded-xl text-sm font-semibold border border-accent text-accent bg-accent/10 active:bg-accent/25 disabled:opacity-50 transition-colors"
+        >
+          {acting ? "Running..." : "Trigger Heartbeat"}
+        </button>
+      )}
     </div>
   );
 }
