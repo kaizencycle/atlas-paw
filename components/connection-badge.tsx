@@ -1,29 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import type { ConnectionMode } from "@/lib/connection";
+import { useAtlasLive } from "@/components/atlas-live-context";
 
 export function ConnectionBadge() {
-  const [mode, setMode] = useState<ConnectionMode>("checking");
-
-  useEffect(() => {
-    let mounted = true;
-    async function check() {
-      try {
-        const res = await fetch("/api/health");
-        const data = await res.json();
-        if (mounted) setMode(data.mode);
-      } catch {
-        if (mounted) setMode("readonly");
-      }
-    }
-    check();
-    const id = setInterval(check, 30_000);
-    return () => {
-      mounted = false;
-      clearInterval(id);
-    };
-  }, []);
+  const { snapshot } = useAtlasLive();
+  const mode = snapshot.mode;
 
   const label =
     mode === "full"

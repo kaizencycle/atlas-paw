@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { StatusCard } from "@/components/status-card";
 import { TripwireGrid } from "@/components/tripwire-grid";
 import { AtlasSays } from "@/components/atlas-says";
+import { AtlasNotifyBar } from "@/components/atlas-notify-bar";
 
 interface AtlasState {
   suspended: boolean;
@@ -146,6 +147,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4">
+      <AtlasNotifyBar />
       {/* ATLAS Says — self-report card */}
       <AtlasSays
         suspended={state.suspended}

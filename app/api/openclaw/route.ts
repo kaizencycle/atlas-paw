@@ -1,9 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/lib/auth";
 import { openclawRPC, openclawExec, checkTunnelHealth } from "@/lib/openclaw";
 
 export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const online = await checkTunnelHealth();
   if (!online) {
     return NextResponse.json(
