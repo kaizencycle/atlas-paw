@@ -18,8 +18,7 @@ if (process.env.GITHUB_CLIENT_SECRET && !process.env.AUTH_GITHUB_SECRET) {
 const authConfig = {
   /** Required on Vercel / behind proxies so OAuth callback URLs resolve correctly. */
   trustHost: true,
-  /** Explicit secret avoids MissingSecret in production; falls back to NEXTAUTH_SECRET. */
-  secret: process.env.AUTH_SECRET || process.env.NEXTAUTH_SECRET,
+  /** Omit `secret` here so next-auth `setEnvDefaults` can set it from AUTH_SECRET / NEXTAUTH_SECRET. */
   pages: {
     signIn: "/signin",
   },
