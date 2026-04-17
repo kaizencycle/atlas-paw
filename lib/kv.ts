@@ -55,3 +55,10 @@ export async function kvSet(
   })) as { result?: string } | null;
   return body?.result === "OK";
 }
+
+export async function kvDel(key: string): Promise<boolean> {
+  const body = (await kvCall(`/del/${encodeURIComponent(key)}`, {
+    method: "POST",
+  })) as { result?: number } | null;
+  return (body?.result ?? 0) > 0;
+}
