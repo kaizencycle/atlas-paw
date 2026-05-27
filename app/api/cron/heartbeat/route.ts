@@ -10,7 +10,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { loadLastSeen } from "@/lib/atlas-gateway-state";
-import { kvConfigured } from "@/lib/kv";
+import { kvConfigured, kvGet, kvSet } from "@/lib/kv";
 
 export const dynamic = "force-dynamic";
 
@@ -45,6 +45,25 @@ export async function GET(req: NextRequest) {
 
   const lastSeen = kvConfigured() ? await loadLastSeen() : null;
   const now = new Date().toISOString();
+  const tripwireIds = kvConfigured()
+    ? await kvGet<string[]>("atlas:paw:tripwires:self:index")
+    : null;
+  const tripwireCount = Array.isArray(tripwireIds) ? tripwireIds.length : 0;
+
+  if (kvConfigured()) {
+    await kvSet(
+      "atlas:paw:liveness",
+      {
+        ts: Date.now(),
+        status: lastSeen ? "ok" : "degraded",
+        checkedAt: now,
+        tripwireCount,
+        lastSeenAt: lastSeen?.at ?? null,
+        lastHeartbeat: lastSeen?.state.last_heartbeat ?? null,
+      },
+      { ex: 90_000 }
+    );
+  }
 
   const payload = {
     agent: "ATLAS",
@@ -81,6 +100,7 @@ export async function GET(req: NextRequest) {
       sent_at: now,
       response_preview: body.slice(0, 200),
       had_last_seen: Boolean(lastSeen),
+      tripwireCount,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
