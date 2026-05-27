@@ -10,13 +10,20 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { loadLastSeen } from "@/lib/atlas-gateway-state";
-import { kvConfigured } from "@/lib/kv";
+import { kvConfigured, kvGet, kvSet } from "@/lib/kv";
 
 export const dynamic = "force-dynamic";
 
 const TERMINAL_URL = process.env.TERMINAL_HEARTBEAT_URL || "";
 const AGENT_TOKEN = process.env.AGENT_SERVICE_TOKEN || "";
 const CRON_SECRET = process.env.CRON_SECRET || "";
+
+function isFreshIso(iso: string | null | undefined, maxAgeMs: number): boolean {
+  if (!iso) return false;
+  const ts = new Date(iso).getTime();
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() - ts <= maxAgeMs;
+}
 
 function cronAuthorized(req: NextRequest): boolean {
   if (req.headers.get("x-vercel-cron")) return true;
@@ -36,15 +43,40 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ error: "Cron-only endpoint" }, { status: 403 });
   }
 
+  const lastSeen = kvConfigured() ? await loadLastSeen() : null;
+  const now = new Date().toISOString();
+  const tripwireIds = kvConfigured()
+    ? await kvGet<string[]>("atlas:paw:tripwires:self:index")
+    : null;
+  const tripwireCount = Array.isArray(tripwireIds) ? tripwireIds.length : 0;
+  const lastSeenFresh = isFreshIso(
+    lastSeen?.state.last_heartbeat ?? lastSeen?.at ?? null,
+    26 * 60 * 60 * 1000
+  );
+
+  if (kvConfigured()) {
+    await kvSet(
+      "atlas:paw:liveness",
+      {
+        ts: Date.now(),
+        status: lastSeenFresh ? "ok" : "degraded",
+        checkedAt: now,
+        tripwireCount,
+        lastSeenAt: lastSeen?.at ?? null,
+        lastHeartbeat: lastSeen?.state.last_heartbeat ?? null,
+      },
+      { ex: 90_000 }
+    );
+  }
+
   if (!TERMINAL_URL || !AGENT_TOKEN) {
     return NextResponse.json({
       ok: false,
       skipped: "TERMINAL_HEARTBEAT_URL or AGENT_SERVICE_TOKEN not configured",
+      tripwireCount,
+      last_seen_fresh: lastSeenFresh,
     });
   }
-
-  const lastSeen = kvConfigured() ? await loadLastSeen() : null;
-  const now = new Date().toISOString();
 
   const payload = {
     agent: "ATLAS",
@@ -81,6 +113,7 @@ export async function GET(req: NextRequest) {
       sent_at: now,
       response_preview: body.slice(0, 200),
       had_last_seen: Boolean(lastSeen),
+      tripwireCount,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
