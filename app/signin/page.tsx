@@ -1,6 +1,9 @@
-import { signIn } from "@/lib/auth";
+import { Suspense } from "react";
+import { SignInForm } from "@/components/sign-in-form";
 
-export default function SignInPage() {
+export const dynamic = "force-dynamic";
+
+function SignInFallback() {
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center px-6 gap-6">
       <div className="text-center space-y-2">
@@ -15,19 +18,17 @@ export default function SignInPage() {
           workstation.
         </p>
       </div>
-      <form
-        action={async () => {
-          "use server";
-          await signIn("github", { redirectTo: "/" });
-        }}
-      >
-        <button
-          type="submit"
-          className="px-5 py-2.5 rounded-xl text-sm font-semibold bg-atlas text-bg border border-atlas-dim active:opacity-90"
-        >
-          Continue with GitHub
-        </button>
-      </form>
+      <div className="px-5 py-2.5 rounded-xl text-sm font-semibold bg-atlas text-bg border border-atlas-dim opacity-60">
+        Continue with GitHub
+      </div>
     </div>
+  );
+}
+
+export default function SignInPage() {
+  return (
+    <Suspense fallback={<SignInFallback />}>
+      <SignInForm />
+    </Suspense>
   );
 }
