@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "tsx --tsconfig tsconfig.json --test lib/mobius/hmac/signer.test.ts lib/mobius/github/overlap-checker.test.ts lib/mobius/dispatcher/orchestrator.test.ts"
+    "test": "tsx --tsconfig tsconfig.json --test lib/auth-callback.test.ts lib/github-allowlist.test.ts lib/mobius/hmac/signer.test.ts lib/mobius/github/overlap-checker.test.ts lib/mobius/dispatcher/orchestrator.test.ts"
   },
   "dependencies": {
     "@notionhq/client": "^5.26.0",
