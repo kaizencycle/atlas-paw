@@ -7,9 +7,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "test": "node --experimental-strip-types --test lib/auth-callback.test.ts lib/github-allowlist.test.ts"
+    "test": "tsx --tsconfig tsconfig.json --test lib/auth-callback.test.ts lib/github-allowlist.test.ts lib/mobius/hmac/signer.test.ts lib/mobius/github/overlap-checker.test.ts lib/mobius/dispatcher/orchestrator.test.ts"
   },
   "dependencies": {
+    "@notionhq/client": "^5.26.0",
     "next": "^15.3.0",
     "next-auth": "^5.0.0-beta.28",
     "react": "^19.1.0",
@@ -21,6 +22,7 @@
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "tailwindcss": "^4.1.0",
+    "tsx": "^4.23.12",
     "typescript": "^5.8.0"
   }
 }
