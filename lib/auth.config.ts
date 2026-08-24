@@ -32,6 +32,7 @@ const authConfig = {
       if (path === "/api/health") return true;
       if (path === "/api/gateway/register") return true;
       if (path.startsWith("/api/cron/")) return true;
+      if (path.startsWith("/api/mobius/")) return true;
       if (path.startsWith("/api/")) return true;
       if (path === "/signin") return true;
       return Boolean(auth?.user);
