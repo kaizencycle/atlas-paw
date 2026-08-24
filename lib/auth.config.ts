@@ -21,6 +21,7 @@ const authConfig = {
   /** Omit `secret` here so next-auth `setEnvDefaults` can set it from AUTH_SECRET / NEXTAUTH_SECRET. */
   pages: {
     signIn: "/signin",
+    error: "/signin",
   },
   /** Use `GitHub` as a function so Auth merges `AUTH_GITHUB_*` from env. */
   providers: [GitHub],
