@@ -7,7 +7,7 @@ import {
   validateDispatchRequest,
   type DispatchRequest,
 } from "./orchestrator";
-import type { HomeroomJob } from "../notion/schema";
+import { parseHomeroomScopePaths, type HomeroomJob } from "../notion/schema";
 
 const ENV_KEYS = [
   "MOBIUS_DISPATCH_ENABLED",
@@ -104,6 +104,21 @@ describe("dispatcher orchestrator", () => {
     assert.equal(extractCanonicalCycle({}), null);
   });
 
+  it("parses path tokens from Homeroom scope text", () => {
+    assert.deepEqual(parseHomeroomScopePaths("lib/"), ["lib/"]);
+    assert.deepEqual(
+      parseHomeroomScopePaths(
+        ".github/workflows/mobius-sync-unified.yml; kaizen_manifest.yaml; labs/lab7-proof/workrepo and extra prose"
+      ),
+      [
+        ".github/workflows/mobius-sync-unified.yml",
+        "kaizen_manifest.yaml",
+        "labs/lab7-proof/workrepo",
+      ]
+    );
+    assert.deepEqual(parseHomeroomScopePaths("Top-level path ... only; no other cleanup"), []);
+  });
+
   it("returns DISABLED when the feature flag is not true", async () => {
     setEnv({ MOBIUS_DISPATCH_ENABLED: "false" });
     const dispatched = await dispatchJob(request);
@@ -145,6 +160,86 @@ describe("dispatcher orchestrator", () => {
     assert.equal(dispatched.status, "BROKER_UNAVAILABLE");
     assert.equal(dispatched.httpStatus, 503);
     assert.equal(dispatched.message, "OAA broker unavailable (Phase 2 not deployed?)");
+  });
+
+  it("rejects Homeroom jobs without a cycle", async () => {
+    setEnv({
+      MOBIUS_DISPATCH_ENABLED: "true",
+      MOBIUS_ATLAS_CLAUDE_HMAC_KEY: "test-key",
+      NOTION_API_KEY: "test-notion",
+      NOTION_HOMEROOM_DATABASE_ID: "test-db",
+      GITHUB_TOKEN: "test-github",
+    });
+    const dispatched = await dispatchJob(request, {
+      findJob: async () => ({ ...availableJob(), cycle: null }),
+      reconcile: async () => ({ ok: true, cycle: "C-412", source: "test" }),
+    });
+    assert.equal(dispatched.status, "CYCLE_MISMATCH");
+    assert.match(dispatched.message ?? "", /no cycle/);
+  });
+
+  it("rejects a request whose scope is not the Homeroom assignment", async () => {
+    setEnv({
+      MOBIUS_DISPATCH_ENABLED: "true",
+      MOBIUS_ATLAS_CLAUDE_HMAC_KEY: "test-key",
+      NOTION_API_KEY: "test-notion",
+      NOTION_HOMEROOM_DATABASE_ID: "test-db",
+      GITHUB_TOKEN: "test-github",
+    });
+    const dispatched = await dispatchJob(
+      { ...request, scopePaths: ["docs/"] },
+      {
+        findJob: async () => availableJob(),
+        reconcile: async () => ({ ok: true, cycle: "C-412", source: "test" }),
+      }
+    );
+    assert.equal(dispatched.status, "SCOPE_MISMATCH");
+    assert.match(dispatched.message ?? "", /not within Homeroom scope/);
+  });
+
+  it("runs overlap and claim against Homeroom scope, not a narrower request", async () => {
+    setEnv({
+      MOBIUS_DISPATCH_ENABLED: "true",
+      MOBIUS_ATLAS_CLAUDE_HMAC_KEY: "test-key",
+      NOTION_API_KEY: "test-notion",
+      NOTION_HOMEROOM_DATABASE_ID: "test-db",
+      GITHUB_TOKEN: "test-github",
+    });
+    let overlapArgs: { repositories: string[]; scopePaths: string[]; branch: string } | null =
+      null;
+    let claimArgs: { repositories: string[]; scope_paths: string[]; branch: string } | null =
+      null;
+    const dispatched = await dispatchJob(
+      { ...request, scopePaths: ["lib/mobius/"] },
+      {
+        findJob: async () => ({
+          ...availableJob(),
+          scopePathsText: "lib/; docs/handbook.md",
+        }),
+        reconcile: async () => ({ ok: true, cycle: "C-412", source: "test" }),
+        checkOverlap: async (args) => {
+          overlapArgs = {
+            repositories: args.repositories,
+            scopePaths: args.scopePaths,
+            branch: args.branch,
+          };
+          return { ok: true, overlap: false };
+        },
+        listActive: async () => ({ kind: "ok", jobs: [] }),
+        claim: async (body) => {
+          claimArgs = {
+            repositories: body.repositories,
+            scope_paths: body.scope_paths,
+            branch: body.branch,
+          };
+          return { kind: "claimed", lease: lease(), authority: "assignment_only" };
+        },
+        persistLease: async () => undefined,
+      }
+    );
+    assert.equal(dispatched.status, "CLAIMED");
+    assert.deepEqual(overlapArgs?.scopePaths, ["lib/", "docs/handbook.md"]);
+    assert.deepEqual(claimArgs?.scope_paths, ["lib/", "docs/handbook.md"]);
   });
 
   it("persists a 10-field lease after a successful claim", async () => {

@@ -110,3 +110,26 @@ export function parseJobNumber(jobId: string): number | null {
   if (prefixed) return Number(prefixed[1]);
   return null;
 }
+
+const SCOPE_PATH_TOKEN = /^(\.?[\w.-]+(?:\/[\w.-]+)*\/?)/;
+
+/**
+ * Extract path-like tokens from Homeroom's free-text Scope Paths field.
+ * Splits on semicolons, commas, and newlines; ignores prose fragments.
+ */
+export function parseHomeroomScopePaths(text: string | null | undefined): string[] {
+  if (!text?.trim()) return [];
+  const chunks = text
+    .split(/[;\n,]+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const found: string[] = [];
+  for (const chunk of chunks) {
+    const match = chunk.match(SCOPE_PATH_TOKEN);
+    if (!match) continue;
+    const token = match[1];
+    const looksLikePath = token.includes("/") || /\.[A-Za-z0-9]{1,10}$/.test(token);
+    if (looksLikePath) found.push(token);
+  }
+  return [...new Set(found)];
+}

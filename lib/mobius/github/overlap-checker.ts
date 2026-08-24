@@ -17,6 +17,9 @@ export type GitHubJsonFetcher = (url: string) => Promise<{
 }>;
 
 const DEFAULT_OWNER = "kaizencycle";
+const DEFAULT_PULLS_PER_PAGE = 100;
+const DEFAULT_FILES_PER_PAGE = 100;
+const DEFAULT_MAX_PAGES = 10;
 
 export function normalizeRepoName(repository: string): { owner: string; repo: string } {
   const trimmed = repository.trim().replace(/\.git$/, "");
@@ -25,6 +28,11 @@ export function normalizeRepoName(repository: string): { owner: string; repo: st
     return { owner: parts[parts.length - 2], repo: parts[parts.length - 1] };
   }
   return { owner: DEFAULT_OWNER, repo: trimmed };
+}
+
+export function repoIdentity(repository: string): string {
+  const { owner, repo } = normalizeRepoName(repository);
+  return `${owner.toLowerCase()}/${repo.toLowerCase()}`;
 }
 
 export function normalizePath(path: string): string {
@@ -81,12 +89,51 @@ type Pull = {
   head?: { ref?: unknown };
 };
 
+type PagedCollect<T> =
+  | { ok: true; items: T[] }
+  | { ok: false; reason: string };
+
+async function collectGithubPages(params: {
+  fetcher: GitHubJsonFetcher;
+  urlForPage: (page: number) => string;
+  perPage: number;
+  maxPages: number;
+  truncatedReason: string;
+}): Promise<PagedCollect<unknown>> {
+  const items: unknown[] = [];
+  for (let page = 1; page <= params.maxPages; page += 1) {
+    let response: { status: number; json: unknown };
+    try {
+      response = await params.fetcher(params.urlForPage(page));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, reason: message };
+    }
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, reason: `HTTP ${response.status}` };
+    }
+    if (response.status < 200 || response.status >= 300) {
+      return { ok: false, reason: `HTTP ${response.status}` };
+    }
+    if (!Array.isArray(response.json)) {
+      return { ok: false, reason: "non-array response" };
+    }
+    items.push(...response.json);
+    if (response.json.length < params.perPage) {
+      return { ok: true, items };
+    }
+  }
+  return { ok: false, reason: params.truncatedReason };
+}
+
 export async function checkGitHubOverlap(params: {
   repositories: string[];
   scopePaths: string[];
   branch: string;
   fetcher?: GitHubJsonFetcher;
-  maxPullsPerRepo?: number;
+  pullsPerPage?: number;
+  filesPerPage?: number;
+  maxPages?: number;
 }): Promise<OverlapResult> {
   const branch = params.branch.trim();
   if (!branch) return { ok: false, reason: "branch is required for overlap detection" };
@@ -98,7 +145,9 @@ export async function checkGitHubOverlap(params: {
   }
 
   const fetcher = params.fetcher ?? defaultGitHubJsonFetcher;
-  const maxPulls = params.maxPullsPerRepo ?? 20;
+  const pullsPerPage = params.pullsPerPage ?? DEFAULT_PULLS_PER_PAGE;
+  const filesPerPage = params.filesPerPage ?? DEFAULT_FILES_PER_PAGE;
+  const maxPages = params.maxPages ?? DEFAULT_MAX_PAGES;
   const hits: OverlapHit[] = [];
 
   for (const repository of params.repositories) {
@@ -132,30 +181,34 @@ export async function checkGitHubOverlap(params: {
       };
     }
 
-    let pullsResponse: { status: number; json: unknown };
-    try {
-      pullsResponse = await fetcher(
-        `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=${maxPulls}`
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      return { ok: false, reason: `GitHub pull lookup failed for ${repoLabel}: ${message}` };
+    const pulls = await collectGithubPages({
+      fetcher,
+      perPage: pullsPerPage,
+      maxPages,
+      truncatedReason: `open PR list for ${repoLabel} was truncated; refuse claim`,
+      urlForPage: (page) =>
+        `https://api.github.com/repos/${owner}/${repo}/pulls?state=open&per_page=${pullsPerPage}&page=${page}`,
+    });
+    if (!pulls.ok) {
+      if (pulls.reason.startsWith("HTTP 401") || pulls.reason.startsWith("HTTP 403")) {
+        return { ok: false, reason: `GitHub token cannot list pulls on ${repoLabel}` };
+      }
+      if (pulls.reason.startsWith("HTTP ")) {
+        return {
+          ok: false,
+          reason: `GitHub pull lookup ${pulls.reason} for ${repoLabel}`,
+        };
+      }
+      if (pulls.reason === "non-array response") {
+        return { ok: false, reason: `GitHub pull lookup returned non-array for ${repoLabel}` };
+      }
+      if (pulls.reason.includes("truncated")) {
+        return { ok: false, reason: pulls.reason };
+      }
+      return { ok: false, reason: `GitHub pull lookup failed for ${repoLabel}: ${pulls.reason}` };
     }
 
-    if (pullsResponse.status === 401 || pullsResponse.status === 403) {
-      return { ok: false, reason: `GitHub token cannot list pulls on ${repoLabel}` };
-    }
-    if (pullsResponse.status < 200 || pullsResponse.status >= 300) {
-      return {
-        ok: false,
-        reason: `GitHub pull lookup HTTP ${pullsResponse.status} for ${repoLabel}`,
-      };
-    }
-    if (!Array.isArray(pullsResponse.json)) {
-      return { ok: false, reason: `GitHub pull lookup returned non-array for ${repoLabel}` };
-    }
-
-    for (const rawPull of pullsResponse.json.slice(0, maxPulls)) {
+    for (const rawPull of pulls.items) {
       const pull = rawPull as Pull;
       const number = typeof pull.number === "number" ? pull.number : null;
       const headRef = typeof pull.head?.ref === "string" ? pull.head.ref : "";
@@ -171,33 +224,37 @@ export async function checkGitHubOverlap(params: {
       }
       if (number === null) continue;
 
-      let filesResponse: { status: number; json: unknown };
-      try {
-        filesResponse = await fetcher(
-          `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=100`
-        );
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+      const files = await collectGithubPages({
+        fetcher,
+        perPage: filesPerPage,
+        maxPages,
+        truncatedReason: `pull files for ${repoLabel}#${number} were truncated; refuse claim`,
+        urlForPage: (page) =>
+          `https://api.github.com/repos/${owner}/${repo}/pulls/${number}/files?per_page=${filesPerPage}&page=${page}`,
+      });
+      if (!files.ok) {
+        if (files.reason.startsWith("HTTP 401") || files.reason.startsWith("HTTP 403")) {
+          return {
+            ok: false,
+            reason: `GitHub token cannot read files for ${repoLabel}#${number}`,
+          };
+        }
+        if (files.reason.startsWith("HTTP ")) {
+          return {
+            ok: false,
+            reason: `GitHub pull files ${files.reason} for ${repoLabel}#${number}`,
+          };
+        }
+        if (files.reason.includes("truncated")) {
+          return { ok: false, reason: files.reason };
+        }
         return {
           ok: false,
-          reason: `GitHub pull files lookup failed for ${repoLabel}#${number}: ${message}`,
+          reason: `GitHub pull files lookup failed for ${repoLabel}#${number}: ${files.reason}`,
         };
       }
-      if (filesResponse.status === 401 || filesResponse.status === 403) {
-        return {
-          ok: false,
-          reason: `GitHub token cannot read files for ${repoLabel}#${number}`,
-        };
-      }
-      if (filesResponse.status < 200 || filesResponse.status >= 300) {
-        return {
-          ok: false,
-          reason: `GitHub pull files HTTP ${filesResponse.status} for ${repoLabel}#${number}`,
-        };
-      }
-      if (!Array.isArray(filesResponse.json)) continue;
 
-      const matching = (filesResponse.json as PullFile[])
+      const matching = (files.items as PullFile[])
         .map((file) => (typeof file.filename === "string" ? file.filename : ""))
         .filter((filename) =>
           filename ? params.scopePaths.some((scope) => pathsOverlap(scope, filename)) : false

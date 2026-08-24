@@ -11,12 +11,15 @@ import {
 import { reconcileCycle } from "@/lib/mobius/cycle/reconciler";
 import {
   checkGitHubOverlap,
+  pathsOverlap,
+  repoIdentity,
   type OverlapHit,
 } from "@/lib/mobius/github/overlap-checker";
 import { findHomeroomJob, persistLeaseProjection } from "@/lib/mobius/notion/client";
 import {
   parseJobNumber,
   brokerJobIdFromNumber,
+  parseHomeroomScopePaths,
   type HomeroomJob,
 } from "@/lib/mobius/notion/schema";
 
@@ -36,6 +39,7 @@ export type DispatchStatus =
   | "JOB_NOT_AVAILABLE"
   | "CYCLE_MISMATCH"
   | "CYCLE_UNAVAILABLE"
+  | "SCOPE_MISMATCH"
   | "OVERLAP"
   | "COLLISION"
   | "BROKER_UNAVAILABLE"
@@ -76,6 +80,7 @@ function httpStatusFor(status: DispatchStatus): number {
       return 400;
     case "JOB_NOT_AVAILABLE":
     case "CYCLE_MISMATCH":
+    case "SCOPE_MISMATCH":
     case "OVERLAP":
     case "COLLISION":
       return 409;
@@ -171,13 +176,17 @@ function requiredConfigErrors(): string[] {
   return missing;
 }
 
-function evidenceHash(request: DispatchRequest, brokerJobId: string): string {
+function evidenceHash(
+  bound: BoundDispatchScope,
+  cycle: string,
+  brokerJobId: string
+): string {
   const canonical = JSON.stringify({
     job_id: brokerJobId,
-    cycle: request.cycle,
-    repositories: request.repositories,
-    scope_paths: request.scopePaths,
-    branch: request.branch,
+    cycle,
+    repositories: bound.repositories,
+    scope_paths: bound.scopePaths,
+    branch: bound.branch,
   });
   return `sha256:${createHash("sha256").update(canonical).digest("hex")}`;
 }
@@ -192,6 +201,83 @@ function dispatchStatusFromHomeroom(status: HomeroomJob["status"]): boolean {
   return status === "AVAILABLE";
 }
 
+export type BoundDispatchScope = {
+  repositories: string[];
+  scopePaths: string[];
+  branch: string;
+};
+
+function sameRepoSet(left: string[], right: string[]): boolean {
+  const a = new Set(left.map(repoIdentity));
+  const b = new Set(right.map(repoIdentity));
+  if (a.size !== b.size) return false;
+  for (const key of a) {
+    if (!b.has(key)) return false;
+  }
+  return true;
+}
+
+function requestPathsWithinHomeroom(
+  requestPaths: string[],
+  homeroomPaths: string[]
+): boolean {
+  return requestPaths.every((requested) =>
+    homeroomPaths.some(
+      (assigned) => pathsOverlap(assigned, requested) || pathsOverlap(requested, assigned)
+    )
+  );
+}
+
+/**
+ * Homeroom is the assignment. Caller-supplied repositories/paths/branch may
+ * only confirm it. Overlap checks and the broker lease use the bound scope.
+ */
+export function bindDispatchScope(
+  request: DispatchRequest,
+  job: HomeroomJob
+): BoundDispatchScope | string {
+  if (job.repositories.length === 0) {
+    return "Homeroom job has no repositories";
+  }
+  if (!sameRepoSet(request.repositories, job.repositories)) {
+    return `request repositories [${request.repositories.join(", ")}] do not match Homeroom [${job.repositories.join(", ")}]`;
+  }
+
+  const homeroomBranch = job.branch?.trim() || "";
+  if (homeroomBranch && homeroomBranch !== request.branch) {
+    return `request branch '${request.branch}' does not match Homeroom branch '${homeroomBranch}'`;
+  }
+
+  const assignedPaths = parseHomeroomScopePaths(job.scopePathsText);
+  if (assignedPaths.length > 0) {
+    if (!requestPathsWithinHomeroom(request.scopePaths, assignedPaths)) {
+      return `request scopePaths [${request.scopePaths.join(", ")}] are not within Homeroom scope [${assignedPaths.join(", ")}]`;
+    }
+    return {
+      repositories: job.repositories,
+      scopePaths: assignedPaths,
+      branch: homeroomBranch || request.branch,
+    };
+  }
+
+  const scopeText = job.scopePathsText?.trim() ?? "";
+  if (!scopeText) {
+    return "Homeroom job has no scope paths";
+  }
+  const haystack = scopeText.toLowerCase();
+  const missing = request.scopePaths.filter(
+    (path) => !haystack.includes(path.trim().toLowerCase())
+  );
+  if (missing.length > 0) {
+    return `request scopePaths [${missing.join(", ")}] are not present in Homeroom scope text`;
+  }
+  return {
+    repositories: job.repositories,
+    scopePaths: request.scopePaths,
+    branch: homeroomBranch || request.branch,
+  };
+}
+
 /**
  * ATLAS job dispatcher — 15-step fail-closed clock-in.
  *
@@ -201,15 +287,15 @@ function dispatchStatusFromHomeroom(status: HomeroomJob["status"]): boolean {
  *  4. Reject missing jobs
  *  5. Reject jobs that are not AVAILABLE
  *  6. Reconcile cycle from GitHub cycle.json (TODO #2)
- *  7. Require request / Homeroom / canonical cycle agreement
- *  8. Required GitHub overlap detection (TODO #3)
- *  9. Broker pre-flight GET /v1/jobs/active
- * 10. HMAC-sign and POST /v1/jobs/claim
- * 11. Map 409 ACTIVE_CLAIM_CONFLICT to COLLISION
- * 12. Map broker outage to BROKER_UNAVAILABLE
- * 13. Persist 10-field lease projection to Notion (TODO #5)
- * 14. Projection failure does not void the broker lease
- * 15. Return CLAIMED; execution_authorized remains false
+ *  7. Require request / Homeroom / canonical cycle agreement (Homeroom cycle required)
+ *  8. Bind repositories, scope paths, and branch to the Homeroom job
+ *  9. Required GitHub overlap detection on the bound Homeroom scope (TODO #3)
+ * 10. Broker pre-flight GET /v1/jobs/active
+ * 11. HMAC-sign and POST /v1/jobs/claim with Homeroom-bound scope
+ * 12. Map 409 ACTIVE_CLAIM_CONFLICT to COLLISION
+ * 13. Map broker outage to BROKER_UNAVAILABLE
+ * 14. Persist 10-field lease projection to Notion (TODO #5)
+ * 15. Projection failure does not void the broker lease; return CLAIMED
  */
 export async function dispatchJob(
   request: DispatchRequest,
@@ -258,18 +344,25 @@ export async function dispatchJob(
     }
     return result("CYCLE_UNAVAILABLE", cycle.reason);
   }
-  if (job.cycle && job.cycle !== request.cycle) {
+  if (!job.cycle || job.cycle !== request.cycle) {
     return result(
       "CYCLE_MISMATCH",
-      `request cycle ${request.cycle} does not match Homeroom cycle ${job.cycle}`
+      job.cycle
+        ? `request cycle ${request.cycle} does not match Homeroom cycle ${job.cycle}`
+        : "Homeroom job has no cycle"
     );
+  }
+
+  const bound = bindDispatchScope(request, job);
+  if (typeof bound === "string") {
+    return result("SCOPE_MISMATCH", bound);
   }
 
   const checkOverlap = deps.checkOverlap ?? checkGitHubOverlap;
   const overlap = await checkOverlap({
-    repositories: request.repositories,
-    scopePaths: request.scopePaths,
-    branch: request.branch,
+    repositories: bound.repositories,
+    scopePaths: bound.scopePaths,
+    branch: bound.branch,
   });
   if (!overlap.ok) {
     return result("CONFIG_INCOMPLETE", overlap.reason);
@@ -310,14 +403,14 @@ export async function dispatchJob(
     job_id: brokerJobId,
     cycle: request.cycle,
     runtime_id: process.env.MOBIUS_DISPATCH_RUNTIME_ID?.trim() || DEFAULT_RUNTIME_ID,
-    evidence_hash: evidenceHash(request, brokerJobId),
-    repositories: request.repositories,
-    scope_paths: request.scopePaths,
-    branch: request.branch,
+    evidence_hash: evidenceHash(bound, request.cycle, brokerJobId),
+    repositories: bound.repositories,
+    scope_paths: bound.scopePaths,
+    branch: bound.branch,
     lease_seconds: request.leaseSeconds ?? DEFAULT_LEASE_SECONDS,
   };
 
-  log("claiming", { jobId: brokerJobId, cycle: request.cycle, branch: request.branch });
+  log("claiming", { jobId: brokerJobId, cycle: request.cycle, branch: bound.branch });
 
   const claim = deps.claim ?? claimJob;
   const claimed = await claim(claimBody);
