@@ -1,5 +1,6 @@
 import type { NextAuthConfig } from "next-auth";
 import GitHub from "next-auth/providers/github";
+import { decideGitHubSignIn } from "@/lib/github-allowlist";
 
 /**
  * Auth.js v5 reads `AUTH_GITHUB_ID` / `AUTH_GITHUB_SECRET` via setEnvDefaults when
@@ -36,10 +37,27 @@ const authConfig = {
       if (path === "/signin") return true;
       return Boolean(auth?.user);
     },
-    async signIn({ profile }) {
-      const allowedId = process.env.ALLOWED_GITHUB_ID;
-      if (!allowedId) return false;
-      return String(profile?.id) === allowedId;
+    async signIn({ user, account, profile }) {
+      const githubProfile = profile as
+        | { id?: string | number; login?: string }
+        | undefined;
+      const decision = decideGitHubSignIn(process.env.ALLOWED_GITHUB_ID, {
+        userId: user?.id,
+        providerAccountId: account?.providerAccountId,
+        profileId: githubProfile?.id,
+        login: githubProfile?.login,
+      });
+      if (decision.ok) return true;
+      switch (decision.error) {
+        case "Configuration":
+          return "/signin?error=Configuration";
+        case "AccessDenied":
+          return false;
+        default: {
+          const _exhaustive: never = decision.error;
+          return _exhaustive;
+        }
+      }
     },
     async session({ session, token }) {
       if (token?.sub) session.user.id = token.sub;

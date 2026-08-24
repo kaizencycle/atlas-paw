@@ -9,9 +9,9 @@ function messageForAuthError(error: string | null): string | null {
   if (!error) return null;
   switch (error) {
     case "AccessDenied":
-      return "This GitHub account is not authorized for ATLAS PAW.";
+      return "This GitHub account is not on the ATLAS PAW allowlist. Sign in as the linked account, or set ALLOWED_GITHUB_ID to that user's numeric id or login.";
     case "Configuration":
-      return "Sign-in is misconfigured. Check AUTH_SECRET, AUTH_GITHUB_ID, AUTH_GITHUB_SECRET, and AUTH_URL.";
+      return "Sign-in is misconfigured. Set ALLOWED_GITHUB_ID (GitHub user id or login) plus AUTH_SECRET and AUTH_GITHUB_ID / AUTH_GITHUB_SECRET.";
     case "OAuthCallback":
     case "OAuthSignin":
     case "Callback":
