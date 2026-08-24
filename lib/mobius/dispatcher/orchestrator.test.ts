@@ -285,4 +285,79 @@ describe("dispatcher orchestrator", () => {
       branch: "claude/dispatch-test",
     });
   });
+
+  it("marks Homeroom projection ERROR after a successful claim if persist throws", async () => {
+    setEnv({
+      MOBIUS_DISPATCH_ENABLED: "true",
+      MOBIUS_ATLAS_CLAUDE_HMAC_KEY: "test-key",
+      NOTION_API_KEY: "test-notion",
+      NOTION_HOMEROOM_DATABASE_ID: "test-db",
+      GITHUB_TOKEN: "test-github",
+    });
+
+    const marked: Array<{
+      pageId: string;
+      message: string;
+      lease?: { brokerClaimId: string; leaseExpiresAt?: string; claimedAt?: string };
+    }> = [];
+    const claimed: BrokerClaimResult = {
+      kind: "claimed",
+      lease: lease(),
+      authority: "assignment_only",
+    };
+
+    const dispatched = await dispatchJob(request, {
+      findJob: async () => availableJob(),
+      reconcile: async () => ({ ok: true, cycle: "C-412", source: "test" }),
+      checkOverlap: async () => ({ ok: true, overlap: false }),
+      listActive: async () => ({ kind: "ok", jobs: [] }),
+      claim: async () => claimed,
+      persistLease: async () => {
+        throw new Error("Notion 503");
+      },
+      markProjectionError: async (pageId, message, leaseSnapshot) => {
+        marked.push({ pageId, message, lease: leaseSnapshot });
+      },
+    });
+
+    assert.equal(dispatched.status, "CLAIMED");
+    assert.equal(dispatched.ok, true);
+    assert.equal(dispatched.claimId, lease().claim_id);
+    assert.equal(dispatched.projectionStatus, "ERROR");
+    assert.match(dispatched.message ?? "", /Notion 503/);
+    assert.equal(marked.length, 1);
+    assert.equal(marked[0]?.pageId, "page-1");
+    assert.equal(marked[0]?.lease?.brokerClaimId, lease().claim_id);
+    assert.equal(marked[0]?.lease?.leaseExpiresAt, lease().lease_expires_at);
+    assert.match(marked[0]?.message ?? "", /Notion 503/);
+  });
+
+  it("still returns CLAIMED if markProjectionError also throws", async () => {
+    setEnv({
+      MOBIUS_DISPATCH_ENABLED: "true",
+      MOBIUS_ATLAS_CLAUDE_HMAC_KEY: "test-key",
+      NOTION_API_KEY: "test-notion",
+      NOTION_HOMEROOM_DATABASE_ID: "test-db",
+      GITHUB_TOKEN: "test-github",
+    });
+
+    const dispatched = await dispatchJob(request, {
+      findJob: async () => availableJob(),
+      reconcile: async () => ({ ok: true, cycle: "C-412", source: "test" }),
+      checkOverlap: async () => ({ ok: true, overlap: false }),
+      listActive: async () => ({ kind: "ok", jobs: [] }),
+      claim: async () => ({ kind: "claimed", lease: lease(), authority: "assignment_only" }),
+      persistLease: async () => {
+        throw new Error("Notion 503");
+      },
+      markProjectionError: async () => {
+        throw new Error("Notion still down");
+      },
+    });
+
+    assert.equal(dispatched.status, "CLAIMED");
+    assert.equal(dispatched.ok, true);
+    assert.equal(dispatched.projectionStatus, "ERROR");
+    assert.equal(dispatched.claimId, lease().claim_id);
+  });
 });

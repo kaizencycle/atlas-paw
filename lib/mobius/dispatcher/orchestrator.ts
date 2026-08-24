@@ -15,7 +15,12 @@ import {
   repoIdentity,
   type OverlapHit,
 } from "@/lib/mobius/github/overlap-checker";
-import { findHomeroomJob, persistLeaseProjection } from "@/lib/mobius/notion/client";
+import {
+  findHomeroomJob,
+  markProjectionError,
+  persistLeaseProjection,
+  type ProjectionErrorLease,
+} from "@/lib/mobius/notion/client";
 import {
   parseJobNumber,
   brokerJobIdFromNumber,
@@ -58,6 +63,11 @@ export type DispatchResult = {
 export type DispatchDeps = {
   findJob?: (jobId: string) => Promise<HomeroomJob | null>;
   persistLease?: typeof persistLeaseProjection;
+  markProjectionError?: (
+    pageId: string,
+    message: string,
+    lease?: ProjectionErrorLease
+  ) => Promise<void>;
   reconcile?: typeof reconcileCycle;
   checkOverlap?: typeof checkGitHubOverlap;
   listActive?: typeof listActiveJobs;
@@ -446,6 +456,18 @@ export async function dispatchJob(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     log("projection failed", { jobId: brokerJobId, error: message });
+    const markError = deps.markProjectionError ?? markProjectionError;
+    try {
+      await markError(job.pageId, `Lease acquired; full Homeroom projection failed: ${message}`, {
+        brokerClaimId: lease.claim_id,
+        leaseExpiresAt: lease.lease_expires_at,
+        claimedAt: lease.claimed_at,
+      });
+    } catch (markFailure) {
+      const markMessage =
+        markFailure instanceof Error ? markFailure.message : String(markFailure);
+      log("mark projection error failed", { jobId: brokerJobId, error: markMessage });
+    }
     return {
       ok: true,
       status: "CLAIMED",

@@ -206,16 +206,47 @@ export async function persistLeaseProjection(
   });
 }
 
-export async function markProjectionError(pageId: string, message: string): Promise<void> {
+export type ProjectionErrorLease = {
+  brokerClaimId: string;
+  leaseExpiresAt?: string;
+  claimedAt?: string;
+};
+
+/**
+ * Best-effort Homeroom write when the full 10-field lease projection fails.
+ * The broker lease remains assignment authority; this at least marks ERROR
+ * and, when a claim id is known, Status=ACTIVE so the row is not left AVAILABLE.
+ */
+export async function markProjectionError(
+  pageId: string,
+  message: string,
+  lease?: ProjectionErrorLease
+): Promise<void> {
   if (!notionConfigured()) return;
   const notion = createClient();
+  const properties: PageUpdateProperties = {
+    "Projection Status": { select: { name: "ERROR" } },
+    Blocker: {
+      rich_text: [{ type: "text", text: { content: message.slice(0, 2000) } }],
+    },
+    "Execution Authorized": { checkbox: false },
+  };
+
+  if (lease?.brokerClaimId) {
+    properties.Status = { select: { name: "ACTIVE" } };
+    properties["Broker Claim ID"] = {
+      rich_text: [{ type: "text", text: { content: lease.brokerClaimId.slice(0, 2000) } }],
+    };
+  }
+  if (lease?.leaseExpiresAt) {
+    properties["Lease Expires"] = { date: { start: lease.leaseExpiresAt } };
+  }
+  if (lease?.claimedAt) {
+    properties["Claimed At"] = { date: { start: lease.claimedAt } };
+  }
+
   await notion.pages.update({
     page_id: pageId,
-    properties: {
-      "Projection Status": { select: { name: "ERROR" } },
-      Blocker: {
-        rich_text: [{ type: "text", text: { content: message.slice(0, 2000) } }],
-      },
-    },
+    properties,
   });
 }
